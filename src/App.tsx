@@ -19,8 +19,6 @@ import {
   Footprints,
   Car,
   ExternalLink,
-  LogOut,
-  LogIn,
   Share2,
   Download,
   X,
@@ -29,24 +27,8 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile } from './firebase';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
-import { 
-  collection, 
-  query, 
-  where, 
-  onSnapshot, 
-  addDoc, 
-  updateDoc, 
-  deleteDoc, 
-  doc, 
-  setDoc,
-  getDoc,
-  orderBy,
-  serverTimestamp,
-  getDocFromServer
-} from 'firebase/firestore';
 
 // Types
 interface Activity {
@@ -101,163 +83,37 @@ export default function App() {
 }
 
 function AppContent() {
-  const [user, setUser] = useState<any>(null);
-  const [isAuthReady, setIsAuthReady] = useState(false);
   const [activeTab, setActiveTab] = useState<'travel' | 'expense'>('travel');
-  const [trips, setTrips] = useState<Trip[]>([]);
-  const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [members, setMembers] = useState<Member[]>([]);
-  
-  // Email/Password Auth State
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [displayName, setDisplayName] = useState('');
-  const [isSignUp, setIsSignUp] = useState(false);
-  const [authError, setAuthError] = useState<string | null>(null);
-  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [trips, setTrips] = useState<Trip[]>(() => {
+    const saved = localStorage.getItem('trips');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [expenses, setExpenses] = useState<Expense[]>(() => {
+    const saved = localStorage.getItem('expenses');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [members, setMembers] = useState<Member[]>(() => {
+    const saved = localStorage.getItem('members');
+    return saved ? JSON.parse(saved) : [];
+  });
 
-  // Error handling for Firestore
-  const handleFirestoreError = (error: any, operation: OperationType, path: string) => {
-    const errInfo = {
-      error: error.message || String(error),
-      operationType: operation,
-      path,
-      authInfo: {
-        userId: auth.currentUser?.uid || '',
-        email: auth.currentUser?.email || '',
-        emailVerified: auth.currentUser?.emailVerified || false,
-        isAnonymous: auth.currentUser?.isAnonymous || false,
-        tenantId: auth.currentUser?.tenantId || '',
-        providerInfo: auth.currentUser?.providerData.map(provider => ({
-          providerId: provider.providerId,
-          displayName: provider.displayName || '',
-          email: provider.email || '',
-          photoUrl: provider.photoURL || ''
-        })) || []
-      }
-    };
-    const errString = JSON.stringify(errInfo);
-    console.error('Firestore Error:', errString);
-    throw new Error(errString);
-  };
-
-  // Auth State Listener
+  // Persist to localStorage
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setUser(user);
-      setIsAuthReady(true);
-      if (!user) {
-        // Reset state on logout
-        setTrips([]);
-        setExpenses([]);
-        setMembers([]);
-      }
-    });
-    return () => unsubscribe();
-  }, []);
+    localStorage.setItem('trips', JSON.stringify(trips));
+  }, [trips]);
 
-  // Firestore Sync
   useEffect(() => {
-    if (!user) return;
+    localStorage.setItem('expenses', JSON.stringify(expenses));
+  }, [expenses]);
 
-    const tripsQuery = query(collection(db, 'trips'), where('userId', '==', user.uid));
-    const unsubscribeTrips = onSnapshot(tripsQuery, (snapshot) => {
-      const tripsData = snapshot.docs.map(doc => ({ ...doc.data() } as Trip));
-      setTrips(tripsData);
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'trips'));
-
-    const expensesQuery = query(collection(db, 'expenses'), where('userId', '==', user.uid));
-    const unsubscribeExpenses = onSnapshot(expensesQuery, (snapshot) => {
-      const expensesData = snapshot.docs.map(doc => ({ ...doc.data() } as Expense));
-      setExpenses(expensesData);
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'expenses'));
-
-    const membersQuery = query(collection(db, 'members'), where('userId', '==', user.uid));
-    const unsubscribeMembers = onSnapshot(membersQuery, (snapshot) => {
-      const membersData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Member));
-      setMembers(membersData);
-    }, (err) => handleFirestoreError(err, OperationType.LIST, 'members'));
-
-    // Test connection
-    const testConnection = async () => {
-      try {
-        await getDocFromServer(doc(db, 'test', 'connection'));
-      } catch (error: any) {
-        if (error.message.includes('the client is offline')) {
-          console.error("Please check your Firebase configuration.");
-        }
-      }
-    };
-    testConnection();
-
-    return () => {
-      unsubscribeTrips();
-      unsubscribeExpenses();
-      unsubscribeMembers();
-    };
-  }, [user]);
-
-  const login = async () => {
-    try {
-      const result = await signInWithPopup(auth, googleProvider);
-      const user = result.user;
-      await initializeUserDoc(user);
-      setShowAuthModal(false);
-    } catch (error) {
-      console.error('Login failed:', error);
-    }
-  };
-
-  const initializeUserDoc = async (user: any) => {
-    const userRef = doc(db, 'users', user.uid);
-    const userSnap = await getDoc(userRef);
-    
-    if (!userSnap.exists()) {
-      await setDoc(userRef, {
-        role: 'user',
-        email: user.email,
-        displayName: user.displayName || displayName,
-        createdAt: new Date().toISOString()
-      });
-    }
-  };
-
-  const handleEmailAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError(null);
-    try {
-      if (isSignUp) {
-        const result = await createUserWithEmailAndPassword(auth, email, password);
-        if (displayName) {
-          await updateProfile(result.user, { displayName });
-        }
-        await initializeUserDoc(result.user);
-      } else {
-        await signInWithEmailAndPassword(auth, email, password);
-      }
-      setShowAuthModal(false);
-      setEmail('');
-      setPassword('');
-      setDisplayName('');
-    } catch (error: any) {
-      console.error('Auth failed:', error);
-      setAuthError(error.message);
-    }
-  };
-
-  const logout = async () => {
-    try {
-      await signOut(auth);
-    } catch (error) {
-      console.error('Logout failed:', error);
-    }
-  };
+  useEffect(() => {
+    localStorage.setItem('members', JSON.stringify(members));
+  }, [members]);
 
   const [showAddTrip, setShowAddTrip] = useState(false);
   const [newTripName, setNewTripName] = useState('');
   const [showAddMember, setShowAddMember] = useState(false);
   const [newMemberName, setNewMemberName] = useState('');
-
   const [showAddActivity, setShowAddActivity] = useState(false);
   const [activeTripId, setActiveTripId] = useState<string | null>(null);
   const [newActivity, setNewActivity] = useState({
@@ -270,11 +126,9 @@ function AppContent() {
 
   const ongoingTrip = trips.find(t => t.status === 'ongoing');
   const previousTrips = trips.filter(t => t.status === 'previous');
+  const totalExpense = expenses.reduce((sum, exp) => sum + exp.amount, 0);
 
-  const totalExpense = useMemo(() => expenses.reduce((sum, e) => sum + e.amount, 0), [expenses]);
-
-  const addTrip = async () => {
-    if (!user) return;
+  const addTrip = () => {
     if (!newTripName.trim()) {
       alert("Please enter an event name.");
       return;
@@ -287,21 +141,15 @@ function AppContent() {
       status: 'ongoing',
       date: new Date().toLocaleDateString(),
       activities: [],
-      userId: user.uid
+      userId: 'local-user'
     };
 
-    try {
-      // Mark others as previous in Firestore
-      const ongoingTrips = trips.filter(t => t.status === 'ongoing');
-      for (const t of ongoingTrips) {
-        await updateDoc(doc(db, 'trips', t.id), { status: 'previous' });
-      }
-      await setDoc(doc(db, 'trips', tripId), newTrip);
-      setNewTripName('');
-      setShowAddTrip(false);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `trips/${tripId}`);
-    }
+    setTrips(prev => {
+      const updated = prev.map(t => t.status === 'ongoing' ? { ...t, status: 'previous' as const } : t);
+      return [...updated, newTrip];
+    });
+    setNewTripName('');
+    setShowAddTrip(false);
   };
 
   const addActivity = (tripId: string) => {
@@ -309,8 +157,8 @@ function AppContent() {
     setShowAddActivity(true);
   };
 
-  const handleAddActivity = async () => {
-    if (!activeTripId || !newActivity.type || !user) return;
+  const handleAddActivity = () => {
+    if (!activeTripId || !newActivity.type) return;
     
     const activityId = Date.now().toString();
     const activity: Activity = {
@@ -319,33 +167,27 @@ function AppContent() {
       completed: false
     };
 
-    try {
-      const trip = trips.find(t => t.id === activeTripId);
-      if (trip) {
-        await updateDoc(doc(db, 'trips', activeTripId), {
-          activities: [...trip.activities, activity]
-        });
-      }
-      setNewActivity({
-        type: '',
-        location: '',
-        time: '',
-        navigationUrl: '',
-        transportMode: 'walking'
-      });
-      setShowAddActivity(false);
-      setActiveTripId(null);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `trips/${activeTripId}`);
-    }
+    setTrips(prev => prev.map(t => 
+      t.id === activeTripId ? { ...t, activities: [...t.activities, activity] } : t
+    ));
+
+    setNewActivity({
+      type: '',
+      location: '',
+      time: '',
+      navigationUrl: '',
+      transportMode: 'walking'
+    });
+    setShowAddActivity(false);
+    setActiveTripId(null);
   };
 
   const [newExpenseDesc, setNewExpenseDesc] = useState('');
   const [newExpenseAmount, setNewExpenseAmount] = useState('');
   const [selectedMember, setSelectedMember] = useState('All');
 
-  const addExpense = async () => {
-    if (!newExpenseDesc || !newExpenseAmount || !user) return;
+  const addExpense = () => {
+    if (!newExpenseDesc || !newExpenseAmount) return;
     const expenseId = Date.now().toString();
     const newExp: Expense = {
       id: expenseId,
@@ -353,19 +195,14 @@ function AppContent() {
       amount: parseFloat(newExpenseAmount),
       category: 'General',
       member: selectedMember,
-      userId: user.uid
+      userId: 'local-user'
     };
-    try {
-      await setDoc(doc(db, 'expenses', expenseId), newExp);
-      setNewExpenseDesc('');
-      setNewExpenseAmount('');
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `expenses/${expenseId}`);
-    }
+    setExpenses(prev => [...prev, newExp]);
+    setNewExpenseDesc('');
+    setNewExpenseAmount('');
   };
 
-  const handleAddMember = async () => {
-    if (!user) return;
+  const handleAddMember = () => {
     if (!newMemberName.trim()) {
       alert("Please enter a member name.");
       return;
@@ -376,13 +213,9 @@ function AppContent() {
       return;
     }
     const memberId = Date.now().toString();
-    try {
-      await setDoc(doc(db, 'members', memberId), { name: trimmedName, userId: user.uid });
-      setNewMemberName('');
-      setShowAddMember(false);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `members/${memberId}`);
-    }
+    setMembers(prev => [...prev, { id: memberId, name: trimmedName, userId: 'local-user' }]);
+    setNewMemberName('');
+    setShowAddMember(false);
   };
 
   const exportBill = () => {
@@ -521,73 +354,31 @@ function AppContent() {
     return breakdown;
   }, [expenses, members]);
 
-  const removeMember = async (name: string) => {
-    if (!user) return;
-    
-    const memberToDelete = members.find(m => m.name === name);
-    if (!memberToDelete) return;
-
-    try {
-      // Delete the member
-      await deleteDoc(doc(db, 'members', memberToDelete.id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `members/${memberToDelete.id}`);
-    }
+  const removeMember = (name: string) => {
+    setMembers(prev => prev.filter(m => m.name !== name));
   };
 
-  const toggleActivity = async (tripId: string, activityId: string) => {
-    if (!user) return;
-    const trip = trips.find(t => t.id === tripId);
-    if (!trip) return;
-
-    const updatedActivities = trip.activities.map(a => 
-      a.id === activityId ? { ...a, completed: !a.completed } : a
-    );
-
-    try {
-      await updateDoc(doc(db, 'trips', tripId), { activities: updatedActivities });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `trips/${tripId}`);
-    }
+  const toggleActivity = (tripId: string, activityId: string) => {
+    setTrips(prev => prev.map(t => 
+      t.id === tripId ? {
+        ...t,
+        activities: t.activities.map(a => a.id === activityId ? { ...a, completed: !a.completed } : a)
+      } : t
+    ));
   };
 
-  const removeActivity = async (tripId: string, activityId: string) => {
-    if (!user) return;
-    const trip = trips.find(t => t.id === tripId);
-    if (!trip) return;
-
-    const updatedActivities = trip.activities.filter(a => a.id !== activityId);
-
-    try {
-      await updateDoc(doc(db, 'trips', tripId), { activities: updatedActivities });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `trips/${tripId}`);
-    }
+  const removeActivity = (tripId: string, activityId: string) => {
+    setTrips(prev => prev.map(t => 
+      t.id === tripId ? {
+        ...t,
+        activities: t.activities.filter(a => a.id !== activityId)
+      } : t
+    ));
   };
 
-  const removeTrip = async (tripId: string) => {
-    if (!user) return;
-    try {
-      await deleteDoc(doc(db, 'trips', tripId));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, `trips/${tripId}`);
-    }
+  const removeTrip = (tripId: string) => {
+    setTrips(prev => prev.filter(t => t.id !== tripId));
   };
-
-  if (!isAuthReady) {
-    return (
-      <div className="min-h-screen bg-[#F5F5F5] flex items-center justify-center">
-        <motion.div 
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="text-center"
-        >
-          <div className="w-16 h-16 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-gray-500 font-medium">Loading your events...</p>
-        </motion.div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-[#F5F5F5] text-[#1A1A1A] font-sans">
@@ -596,31 +387,10 @@ function AppContent() {
         <div className="max-w-md mx-auto">
           <div className="flex items-center justify-between mb-6">
             <h1 className="text-3xl font-light tracking-tight">Expense Tracker</h1>
-            {user ? (
-              <div className="flex items-center gap-3">
-                <img 
-                  src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || user.email}`} 
-                  alt={user.displayName || user.email} 
-                  className="w-8 h-8 rounded-full border border-black/5"
-                  referrerPolicy="no-referrer"
-                />
-                <button 
-                  onClick={logout}
-                  className="p-2 text-gray-400 hover:text-red-500 transition-colors"
-                  title="Logout"
-                >
-                  <LogOut size={20} />
-                </button>
-              </div>
-            ) : (
-              <button 
-                onClick={() => setShowAuthModal(true)}
-                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-500/10"
-              >
-                <LogIn size={18} />
-                Login
-              </button>
-            )}
+            <div className="flex items-center gap-2 px-3 py-1 bg-emerald-50 text-emerald-600 rounded-full text-[10px] font-bold uppercase tracking-wider border border-emerald-100">
+              <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+              Local Mode
+            </div>
           </div>
           
           <div className="flex bg-[#F0F0F0] p-1 rounded-xl">
@@ -628,35 +398,19 @@ function AppContent() {
               onClick={() => setActiveTab('travel')}
               className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'travel' ? 'bg-white shadow-sm' : 'text-gray-500'}`}
             >
-              TRAVEL
+              EVENTS
             </button>
             <button 
               onClick={() => setActiveTab('expense')}
               className={`flex-1 py-2 rounded-lg text-sm font-medium transition-all ${activeTab === 'expense' ? 'bg-white shadow-sm' : 'text-gray-500'}`}
             >
-              EXPENSE
+              BUDGET
             </button>
           </div>
         </div>
       </header>
 
       <main className="max-w-md mx-auto px-6 py-8 pb-24">
-        {!user && isAuthReady && (
-          <div className="bg-indigo-50 border border-indigo-100 rounded-3xl p-8 text-center mb-8">
-            <div className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-sm">
-              <LogIn className="text-indigo-600" size={32} />
-            </div>
-            <h3 className="text-xl font-medium text-indigo-900 mb-2">Restore Your Data</h3>
-            <p className="text-sm text-indigo-700/70 mb-6">Login to sync your events and expenses across all your devices.</p>
-            <button 
-              onClick={() => setShowAuthModal(true)}
-              className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-medium hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-500/20"
-            >
-              Get Started
-            </button>
-          </div>
-        )}
-
         <AnimatePresence mode="wait">
           {activeTab === 'travel' ? (
             <motion.div 
@@ -941,12 +695,8 @@ function AppContent() {
                       <div className="text-right">
                         <p className="font-semibold text-sm">${expense.amount}</p>
                         <button 
-                          onClick={async () => {
-                            try {
-                              await deleteDoc(doc(db, 'expenses', expense.id));
-                            } catch (err) {
-                              handleFirestoreError(err, OperationType.DELETE, `expenses/${expense.id}`);
-                            }
+                          onClick={() => {
+                            setExpenses(prev => prev.filter(e => e.id !== expense.id));
                           }}
                           className="text-[10px] text-red-400 hover:text-red-600 mt-1"
                         >
@@ -1000,109 +750,6 @@ function AppContent() {
         </AnimatePresence>
       </main>
 
-      {/* Auth Modal */}
-      <AnimatePresence>
-        {showAuthModal && (
-          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setShowAuthModal(false)}
-              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
-            />
-            <motion.div 
-              initial={{ y: 100, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              exit={{ y: 100, opacity: 0 }}
-              className="relative w-full max-w-md bg-white rounded-t-[2.5rem] sm:rounded-[2.5rem] p-8 shadow-2xl"
-            >
-              <div className="flex items-center justify-between mb-6">
-                <h3 className="text-2xl font-light">{isSignUp ? 'Create Account' : 'Welcome Back'}</h3>
-                <button onClick={() => setShowAuthModal(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
-                  <X size={20} className="text-gray-400" />
-                </button>
-              </div>
-
-              <form onSubmit={handleEmailAuth} className="space-y-4">
-                {isSignUp && (
-                  <div>
-                    <label className="text-[10px] uppercase font-bold tracking-widest text-gray-400 mb-2 block">Name</label>
-                    <input 
-                      type="text" 
-                      value={displayName}
-                      onChange={(e) => setDisplayName(e.target.value)}
-                      placeholder="Your Name"
-                      className="w-full bg-gray-50 border border-black/5 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                      required
-                    />
-                  </div>
-                )}
-                <div>
-                  <label className="text-[10px] uppercase font-bold tracking-widest text-gray-400 mb-2 block">Email</label>
-                  <input 
-                    type="email" 
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="email@example.com"
-                    className="w-full bg-gray-50 border border-black/5 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] uppercase font-bold tracking-widest text-gray-400 mb-2 block">Password</label>
-                  <input 
-                    type="password" 
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full bg-gray-50 border border-black/5 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-                    required
-                  />
-                </div>
-
-                {authError && (
-                  <p className="text-xs text-red-500 bg-red-50 p-3 rounded-xl">{authError}</p>
-                )}
-
-                <button 
-                  type="submit"
-                  className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-medium hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-500/20"
-                >
-                  {isSignUp ? 'Sign Up' : 'Login'}
-                </button>
-              </form>
-
-              <div className="mt-6">
-                <div className="relative flex items-center justify-center mb-6">
-                  <div className="absolute inset-0 flex items-center">
-                    <div className="w-full border-t border-gray-100"></div>
-                  </div>
-                  <span className="relative px-4 bg-white text-xs text-gray-400 uppercase tracking-widest">Or continue with</span>
-                </div>
-
-                <button 
-                  onClick={login}
-                  className="w-full py-4 bg-white border border-black/5 text-gray-700 rounded-2xl font-medium hover:bg-gray-50 transition-colors flex items-center justify-center gap-3"
-                >
-                  <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="Google" />
-                  Google
-                </button>
-              </div>
-
-              <p className="mt-8 text-center text-sm text-gray-500">
-                {isSignUp ? 'Already have an account?' : "Don't have an account?"}{' '}
-                <button 
-                  onClick={() => setIsSignUp(!isSignUp)}
-                  className="text-indigo-600 font-medium hover:underline"
-                >
-                  {isSignUp ? 'Login' : 'Sign Up'}
-                </button>
-              </p>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
       <AnimatePresence>
         {showAddTrip && (
           <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">

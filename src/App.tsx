@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Plus, 
   MapPin, 
@@ -19,9 +19,26 @@ import {
   Navigation,
   Footprints,
   Car,
-  ExternalLink
+  ExternalLink,
+  LogOut,
+  LogIn
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged } from './firebase';
+import { 
+  collection, 
+  query, 
+  where, 
+  onSnapshot, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  doc, 
+  setDoc,
+  orderBy,
+  serverTimestamp,
+  getDocFromServer
+} from 'firebase/firestore';
 
 // Types
 interface Activity {
@@ -40,6 +57,7 @@ interface Trip {
   status: 'ongoing' | 'previous';
   date: string;
   activities: Activity[];
+  userId: string;
 }
 
 interface Expense {
@@ -48,36 +66,166 @@ interface Expense {
   amount: number;
   category: string;
   member?: string;
+  userId: string;
+}
+
+interface Member {
+  id: string;
+  name: string;
+  userId: string;
+}
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: any }> {
+  constructor(props: any) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: any) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: any, errorInfo: any) {
+    console.error("Uncaught error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen bg-white flex items-center justify-center p-6 text-center">
+          <div className="max-w-md">
+            <div className="w-20 h-20 bg-red-50 rounded-3xl flex items-center justify-center mx-auto mb-6">
+              <Trash2 className="text-red-500" size={40} />
+            </div>
+            <h2 className="text-2xl font-light mb-4">Something went wrong</h2>
+            <p className="text-gray-500 mb-8 text-sm leading-relaxed">
+              We encountered an error while processing your request. This might be due to a connection issue or a permission error.
+            </p>
+            <button 
+              onClick={() => window.location.reload()}
+              className="px-8 py-4 bg-indigo-600 text-white rounded-2xl font-medium hover:bg-indigo-700 transition-colors"
+            >
+              Reload Application
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
 }
 
 export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
+  );
+}
+
+function AppContent() {
+  const [user, setUser] = useState<any>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
   const [activeTab, setActiveTab] = useState<'travel' | 'expense'>('travel');
-  const [trips, setTrips] = useState<Trip[]>([
-    {
-      id: '1',
-      name: 'Summer Vacation 2024',
-      status: 'ongoing',
-      date: 'Mar 17, 2026',
-      activities: [
-        { id: 'a1', type: 'Railway', location: 'Central Station', time: '10:00 AM', completed: false },
-        { id: 'a2', type: 'Hotel', location: 'Grand Plaza', time: '02:00 PM', completed: false },
-      ]
-    },
-    {
-      id: '2',
-      name: 'Weekend Getaway',
-      status: 'previous',
-      date: 'Feb 12, 2026',
-      activities: []
+  const [trips, setTrips] = useState<Trip[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [members, setMembers] = useState<Member[]>([{ id: 'self', name: 'Self', userId: '' }]);
+
+  // Error handling for Firestore
+  const handleFirestoreError = (error: any, operation: OperationType, path: string) => {
+    const errInfo = {
+      error: error.message || String(error),
+      operationType: operation,
+      path,
+      authInfo: {
+        userId: auth.currentUser?.uid,
+        email: auth.currentUser?.email,
+      }
+    };
+    console.error('Firestore Error:', JSON.stringify(errInfo));
+  };
+
+  // Auth State Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setUser(user);
+      setIsAuthReady(true);
+      if (!user) {
+        // Reset state on logout
+        setTrips([]);
+        setExpenses([]);
+        setMembers(['Self']);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Firestore Sync
+  useEffect(() => {
+    if (!user) return;
+
+    const tripsQuery = query(collection(db, 'trips'), where('userId', '==', user.uid));
+    const unsubscribeTrips = onSnapshot(tripsQuery, (snapshot) => {
+      const tripsData = snapshot.docs.map(doc => ({ ...doc.data() } as Trip));
+      setTrips(tripsData);
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'trips'));
+
+    const expensesQuery = query(collection(db, 'expenses'), where('userId', '==', user.uid));
+    const unsubscribeExpenses = onSnapshot(expensesQuery, (snapshot) => {
+      const expensesData = snapshot.docs.map(doc => ({ ...doc.data() } as Expense));
+      setExpenses(expensesData);
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'expenses'));
+
+    const membersQuery = query(collection(db, 'members'), where('userId', '==', user.uid));
+    const unsubscribeMembers = onSnapshot(membersQuery, (snapshot) => {
+      const membersData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Member));
+      setMembers([{ id: 'self', name: 'Self', userId: user.uid }, ...membersData.filter(m => m.name !== 'Self')]);
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'members'));
+
+    // Test connection
+    const testConnection = async () => {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error: any) {
+        if (error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration.");
+        }
+      }
+    };
+    testConnection();
+
+    return () => {
+      unsubscribeTrips();
+      unsubscribeExpenses();
+      unsubscribeMembers();
+    };
+  }, [user]);
+
+  const login = async () => {
+    try {
+      await signInWithPopup(auth, googleProvider);
+    } catch (error) {
+      console.error('Login failed:', error);
     }
-  ]);
+  };
 
-  const [expenses, setExpenses] = useState<Expense[]>([
-    { id: 'e1', description: 'Train Tickets', amount: 120, category: 'Travel', member: 'Self' },
-    { id: 'e2', description: 'Lunch at Station', amount: 45, category: 'Food', member: 'Self' },
-  ]);
-
-  const [members, setMembers] = useState<string[]>(['Self']);
+  const logout = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      console.error('Logout failed:', error);
+    }
+  };
 
   const [showAddTrip, setShowAddTrip] = useState(false);
   const [newTripName, setNewTripName] = useState('');
@@ -97,19 +245,30 @@ export default function App() {
 
   const totalExpense = useMemo(() => expenses.reduce((sum, e) => sum + e.amount, 0), [expenses]);
 
-  const addTrip = () => {
-    if (!newTripName.trim()) return;
+  const addTrip = async () => {
+    if (!newTripName.trim() || !user) return;
+    const tripId = Date.now().toString();
     const newTrip: Trip = {
-      id: Date.now().toString(),
+      id: tripId,
       name: newTripName,
       status: 'ongoing',
       date: new Date().toLocaleDateString(),
-      activities: []
+      activities: [],
+      userId: user.uid
     };
-    // Mark others as previous
-    setTrips(prev => prev.map(t => ({ ...t, status: 'previous' as const })).concat(newTrip));
-    setNewTripName('');
-    setShowAddTrip(false);
+
+    try {
+      // Mark others as previous in Firestore
+      const ongoingTrips = trips.filter(t => t.status === 'ongoing');
+      for (const t of ongoingTrips) {
+        await updateDoc(doc(db, 'trips', t.id), { status: 'previous' });
+      }
+      await setDoc(doc(db, 'trips', tripId), newTrip);
+      setNewTripName('');
+      setShowAddTrip(false);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `trips/${tripId}`);
+    }
   };
 
   const addActivity = (tripId: string) => {
@@ -117,58 +276,77 @@ export default function App() {
     setShowAddActivity(true);
   };
 
-  const handleAddActivity = () => {
-    if (!activeTripId || !newActivity.type) return;
+  const handleAddActivity = async () => {
+    if (!activeTripId || !newActivity.type || !user) return;
     
+    const activityId = Date.now().toString();
     const activity: Activity = {
-      id: Date.now().toString(),
+      id: activityId,
       ...newActivity,
       completed: false
     };
 
-    setTrips(prev => prev.map(t => 
-      t.id === activeTripId ? { ...t, activities: [...t.activities, activity] } : t
-    ));
-
-    setNewActivity({
-      type: '',
-      location: '',
-      time: '',
-      navigationUrl: '',
-      transportMode: 'walking'
-    });
-    setShowAddActivity(false);
-    setActiveTripId(null);
+    try {
+      const trip = trips.find(t => t.id === activeTripId);
+      if (trip) {
+        await updateDoc(doc(db, 'trips', activeTripId), {
+          activities: [...trip.activities, activity]
+        });
+      }
+      setNewActivity({
+        type: '',
+        location: '',
+        time: '',
+        navigationUrl: '',
+        transportMode: 'walking'
+      });
+      setShowAddActivity(false);
+      setActiveTripId(null);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `trips/${activeTripId}`);
+    }
   };
 
   const [newExpenseDesc, setNewExpenseDesc] = useState('');
   const [newExpenseAmount, setNewExpenseAmount] = useState('');
   const [selectedMember, setSelectedMember] = useState('Self');
 
-  const addExpense = () => {
-    if (!newExpenseDesc || !newExpenseAmount) return;
+  const addExpense = async () => {
+    if (!newExpenseDesc || !newExpenseAmount || !user) return;
+    const expenseId = Date.now().toString();
     const newExp: Expense = {
-      id: Date.now().toString(),
+      id: expenseId,
       description: newExpenseDesc,
       amount: parseFloat(newExpenseAmount),
       category: 'Travel',
-      member: selectedMember
+      member: selectedMember,
+      userId: user.uid
     };
-    setExpenses(prev => [...prev, newExp]);
-    setNewExpenseDesc('');
-    setNewExpenseAmount('');
+    try {
+      await setDoc(doc(db, 'expenses', expenseId), newExp);
+      setNewExpenseDesc('');
+      setNewExpenseAmount('');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `expenses/${expenseId}`);
+    }
   };
 
-  const addMember = () => {
+  const addMember = async () => {
+    if (!user) return;
     const name = prompt('Member name?');
-    if (name && !members.includes(name)) {
-      setMembers(prev => [...prev, name]);
+    if (name && !members.some(m => m.name === name)) {
+      const memberId = Date.now().toString();
+      try {
+        await setDoc(doc(db, 'members', memberId), { name, userId: user.uid });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.WRITE, `members/${memberId}`);
+      }
     }
   };
 
   const memberBreakdown = useMemo(() => {
     const breakdown: Record<string, number> = {};
-    members.forEach(m => breakdown[m] = 0);
+    members.forEach(m => breakdown[m.name] = 0);
     expenses.forEach(e => {
       if (e.member) {
         breakdown[e.member] = (breakdown[e.member] || 0) + e.amount;
@@ -177,36 +355,58 @@ export default function App() {
     return breakdown;
   }, [expenses, members]);
 
-  const removeMember = (name: string) => {
-    if (name === 'Self') return;
-    setMembers(prev => prev.filter(m => m !== name));
-    // Also update expenses to 'Self' if the member is removed
-    setExpenses(prev => prev.map(e => e.member === name ? { ...e, member: 'Self' } : e));
-    if (selectedMember === name) setSelectedMember('Self');
+  const removeMember = async (name: string) => {
+    if (name === 'Self' || !user) return;
+    
+    const memberToDelete = members.find(m => m.name === name);
+    if (!memberToDelete || memberToDelete.id === 'self') return;
+
+    try {
+      await deleteDoc(doc(db, 'members', memberToDelete.id));
+      // Expenses are automatically handled in the UI since they reference the name, 
+      // but we could also update them in Firestore if we wanted to be thorough.
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `members/${memberToDelete.id}`);
+    }
   };
 
-  const toggleActivity = (tripId: string, activityId: string) => {
-    setTrips(prev => prev.map(t => 
-      t.id === tripId ? {
-        ...t,
-        activities: t.activities.map(a => 
-          a.id === activityId ? { ...a, completed: !a.completed } : a
-        )
-      } : t
-    ));
+  const toggleActivity = async (tripId: string, activityId: string) => {
+    if (!user) return;
+    const trip = trips.find(t => t.id === tripId);
+    if (!trip) return;
+
+    const updatedActivities = trip.activities.map(a => 
+      a.id === activityId ? { ...a, completed: !a.completed } : a
+    );
+
+    try {
+      await updateDoc(doc(db, 'trips', tripId), { activities: updatedActivities });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `trips/${tripId}`);
+    }
   };
 
-  const removeActivity = (tripId: string, activityId: string) => {
-    setTrips(prev => prev.map(t => 
-      t.id === tripId ? {
-        ...t,
-        activities: t.activities.filter(a => a.id !== activityId)
-      } : t
-    ));
+  const removeActivity = async (tripId: string, activityId: string) => {
+    if (!user) return;
+    const trip = trips.find(t => t.id === tripId);
+    if (!trip) return;
+
+    const updatedActivities = trip.activities.filter(a => a.id !== activityId);
+
+    try {
+      await updateDoc(doc(db, 'trips', tripId), { activities: updatedActivities });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `trips/${tripId}`);
+    }
   };
 
-  const removeTrip = (tripId: string) => {
-    setTrips(prev => prev.filter(t => t.id !== tripId));
+  const removeTrip = async (tripId: string) => {
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'trips', tripId));
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `trips/${tripId}`);
+    }
   };
 
   return (
@@ -214,7 +414,34 @@ export default function App() {
       {/* Header */}
       <header className="bg-white border-b border-black/5 px-6 py-8">
         <div className="max-w-md mx-auto">
-          <h1 className="text-3xl font-light tracking-tight mb-6">Make My Trip</h1>
+          <div className="flex items-center justify-between mb-6">
+            <h1 className="text-3xl font-light tracking-tight">Make My Trip</h1>
+            {user ? (
+              <div className="flex items-center gap-3">
+                <img 
+                  src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}`} 
+                  alt={user.displayName} 
+                  className="w-8 h-8 rounded-full border border-black/5"
+                  referrerPolicy="no-referrer"
+                />
+                <button 
+                  onClick={logout}
+                  className="p-2 text-gray-400 hover:text-red-500 transition-colors"
+                  title="Logout"
+                >
+                  <LogOut size={20} />
+                </button>
+              </div>
+            ) : (
+              <button 
+                onClick={login}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-500/10"
+              >
+                <LogIn size={18} />
+                Login
+              </button>
+            )}
+          </div>
           
           <div className="flex bg-[#F0F0F0] p-1 rounded-xl">
             <button 
@@ -234,6 +461,22 @@ export default function App() {
       </header>
 
       <main className="max-w-md mx-auto px-6 py-8 pb-24">
+        {!user && isAuthReady && (
+          <div className="bg-indigo-50 border border-indigo-100 rounded-3xl p-8 text-center mb-8">
+            <div className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-sm">
+              <LogIn className="text-indigo-600" size={32} />
+            </div>
+            <h3 className="text-xl font-medium text-indigo-900 mb-2">Restore Your Data</h3>
+            <p className="text-sm text-indigo-700/70 mb-6">Login to sync your trips and expenses across all your devices.</p>
+            <button 
+              onClick={login}
+              className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-medium hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-500/20"
+            >
+              Login with Google
+            </button>
+          </div>
+        )}
+
         <AnimatePresence mode="wait">
           {activeTab === 'travel' ? (
             <motion.div 
@@ -459,7 +702,13 @@ export default function App() {
                       <div className="text-right">
                         <p className="font-semibold text-sm">${expense.amount}</p>
                         <button 
-                          onClick={() => setExpenses(prev => prev.filter(e => e.id !== expense.id))}
+                          onClick={async () => {
+                            try {
+                              await deleteDoc(doc(db, 'expenses', expense.id));
+                            } catch (err) {
+                              handleFirestoreError(err, OperationType.DELETE, `expenses/${expense.id}`);
+                            }
+                          }}
                           className="text-[10px] text-red-400 hover:text-red-600 mt-1"
                         >
                           Remove
@@ -492,7 +741,7 @@ export default function App() {
                           className="flex-1 bg-white border border-black/5 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/20 appearance-none"
                         >
                           {members.map(m => (
-                            <option key={m} value={m}>{m}</option>
+                            <option key={m.id} value={m.name}>{m.name}</option>
                           ))}
                         </select>
                       </div>

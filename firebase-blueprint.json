@@ -1,0 +1,72 @@
+{
+  "entities": {
+    "Trip": {
+      "title": "Trip",
+      "description": "A travel trip containing activities.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "status": { "type": "string", "enum": ["ongoing", "previous"] },
+        "date": { "type": "string" },
+        "activities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "type": { "type": "string" },
+              "location": { "type": "string" },
+              "time": { "type": "string" },
+              "completed": { "type": "boolean" },
+              "navigationUrl": { "type": "string" },
+              "transportMode": { "type": "string" }
+            }
+          }
+        },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "status", "userId"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "A travel expense record.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "description": { "type": "string" },
+        "amount": { "type": "number" },
+        "category": { "type": "string" },
+        "member": { "type": "string" },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "description", "amount", "userId"]
+    },
+    "Member": {
+      "title": "Member",
+      "description": "A group member for expense tracking.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "userId": { "type": "string" }
+      },
+      "required": ["name", "userId"]
+    }
+  },
+  "firestore": {
+    "/trips/{tripId}": {
+      "schema": "Trip",
+      "description": "Collection of user trips."
+    },
+    "/expenses/{expenseId}": {
+      "schema": "Expense",
+      "description": "Collection of user expenses."
+    },
+    "/members/{memberId}": {
+      "schema": "Member",
+      "description": "Collection of group members."
+    }
+  }
+}

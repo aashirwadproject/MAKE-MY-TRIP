@@ -29,6 +29,12 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == resource.data.userId;
     }
 
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "dikshaaashirwad@gmail.com" && request.auth.token.email_verified == true));
+    }
+
     function isValidTrip(data) {
       return data.keys().hasAll(['id', 'name', 'status', 'userId']) &&
              data.id is string &&
@@ -51,25 +57,31 @@ service cloud.firestore {
              data.userId == request.auth.uid;
     }
 
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && request.resource.data.role == 'user';
+      allow update: if isAdmin(); // Only admins can change roles
+    }
+
     match /trips/{tripId} {
-      allow read: if isOwner(resource.data.userId);
+      allow read: if isOwner(resource.data.userId) || isAdmin();
       allow create: if isAuthenticated() && isValidTrip(request.resource.data);
-      allow update: if isDocOwner() && isValidTrip(request.resource.data);
-      allow delete: if isDocOwner();
+      allow update: if (isDocOwner() || isAdmin()) && isValidTrip(request.resource.data);
+      allow delete: if isDocOwner() || isAdmin();
     }
 
     match /expenses/{expenseId} {
-      allow read: if isOwner(resource.data.userId);
+      allow read: if isOwner(resource.data.userId) || isAdmin();
       allow create: if isAuthenticated() && isValidExpense(request.resource.data);
-      allow update: if isDocOwner() && isValidExpense(request.resource.data);
-      allow delete: if isDocOwner();
+      allow update: if (isDocOwner() || isAdmin()) && isValidExpense(request.resource.data);
+      allow delete: if isDocOwner() || isAdmin();
     }
 
     match /members/{memberId} {
-      allow read: if isOwner(resource.data.userId);
+      allow read: if isOwner(resource.data.userId) || isAdmin();
       allow create: if isAuthenticated() && isValidMember(request.resource.data);
-      allow update: if isDocOwner() && isValidMember(request.resource.data);
-      allow delete: if isDocOwner();
+      allow update: if (isDocOwner() || isAdmin()) && isValidMember(request.resource.data);
+      allow delete: if isDocOwner() || isAdmin();
     }
   }
 }

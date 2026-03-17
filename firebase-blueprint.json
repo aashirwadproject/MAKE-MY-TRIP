@@ -53,9 +53,24 @@
         "userId": { "type": "string" }
       },
       "required": ["name", "userId"]
+    },
+    "User": {
+      "title": "User",
+      "description": "User profile and role information.",
+      "type": "object",
+      "properties": {
+        "role": { "type": "string", "enum": ["admin", "user"] },
+        "email": { "type": "string", "format": "email" },
+        "displayName": { "type": "string" }
+      },
+      "required": ["role"]
     }
   },
   "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Collection of user profiles."
+    },
     "/trips/{tripId}": {
       "schema": "Trip",
       "description": "Collection of user trips."

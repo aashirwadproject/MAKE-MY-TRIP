@@ -29,7 +29,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ErrorBoundary } from './components/ErrorBoundary';
-import { auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged } from './firebase';
+import { auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile } from './firebase';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { 
@@ -107,6 +107,14 @@ function AppContent() {
   const [trips, setTrips] = useState<Trip[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
+  
+  // Email/Password Auth State
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [showAuthModal, setShowAuthModal] = useState(false);
 
   // Error handling for Firestore
   const handleFirestoreError = (error: any, operation: OperationType, path: string) => {
@@ -193,21 +201,47 @@ function AppContent() {
     try {
       const result = await signInWithPopup(auth, googleProvider);
       const user = result.user;
-      
-      // Initialize user document if it doesn't exist
-      const userRef = doc(db, 'users', user.uid);
-      const userSnap = await getDoc(userRef);
-      
-      if (!userSnap.exists()) {
-        await setDoc(userRef, {
-          role: 'user',
-          email: user.email,
-          displayName: user.displayName,
-          createdAt: new Date().toISOString()
-        });
-      }
+      await initializeUserDoc(user);
+      setShowAuthModal(false);
     } catch (error) {
       console.error('Login failed:', error);
+    }
+  };
+
+  const initializeUserDoc = async (user: any) => {
+    const userRef = doc(db, 'users', user.uid);
+    const userSnap = await getDoc(userRef);
+    
+    if (!userSnap.exists()) {
+      await setDoc(userRef, {
+        role: 'user',
+        email: user.email,
+        displayName: user.displayName || displayName,
+        createdAt: new Date().toISOString()
+      });
+    }
+  };
+
+  const handleEmailAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    try {
+      if (isSignUp) {
+        const result = await createUserWithEmailAndPassword(auth, email, password);
+        if (displayName) {
+          await updateProfile(result.user, { displayName });
+        }
+        await initializeUserDoc(result.user);
+      } else {
+        await signInWithEmailAndPassword(auth, email, password);
+      }
+      setShowAuthModal(false);
+      setEmail('');
+      setPassword('');
+      setDisplayName('');
+    } catch (error: any) {
+      console.error('Auth failed:', error);
+      setAuthError(error.message);
     }
   };
 
@@ -565,8 +599,8 @@ function AppContent() {
             {user ? (
               <div className="flex items-center gap-3">
                 <img 
-                  src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}`} 
-                  alt={user.displayName} 
+                  src={user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName || user.email}`} 
+                  alt={user.displayName || user.email} 
                   className="w-8 h-8 rounded-full border border-black/5"
                   referrerPolicy="no-referrer"
                 />
@@ -580,7 +614,7 @@ function AppContent() {
               </div>
             ) : (
               <button 
-                onClick={login}
+                onClick={() => setShowAuthModal(true)}
                 className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-xl text-sm font-medium hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-500/10"
               >
                 <LogIn size={18} />
@@ -615,10 +649,10 @@ function AppContent() {
             <h3 className="text-xl font-medium text-indigo-900 mb-2">Restore Your Data</h3>
             <p className="text-sm text-indigo-700/70 mb-6">Login to sync your events and expenses across all your devices.</p>
             <button 
-              onClick={login}
+              onClick={() => setShowAuthModal(true)}
               className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-medium hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-500/20"
             >
-              Login with Google
+              Get Started
             </button>
           </div>
         )}
@@ -966,7 +1000,109 @@ function AppContent() {
         </AnimatePresence>
       </main>
 
-      {/* Add Event Modal */}
+      {/* Auth Modal */}
+      <AnimatePresence>
+        {showAuthModal && (
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowAuthModal(false)}
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ y: 100, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 100, opacity: 0 }}
+              className="relative w-full max-w-md bg-white rounded-t-[2.5rem] sm:rounded-[2.5rem] p-8 shadow-2xl"
+            >
+              <div className="flex items-center justify-between mb-6">
+                <h3 className="text-2xl font-light">{isSignUp ? 'Create Account' : 'Welcome Back'}</h3>
+                <button onClick={() => setShowAuthModal(false)} className="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                  <X size={20} className="text-gray-400" />
+                </button>
+              </div>
+
+              <form onSubmit={handleEmailAuth} className="space-y-4">
+                {isSignUp && (
+                  <div>
+                    <label className="text-[10px] uppercase font-bold tracking-widest text-gray-400 mb-2 block">Name</label>
+                    <input 
+                      type="text" 
+                      value={displayName}
+                      onChange={(e) => setDisplayName(e.target.value)}
+                      placeholder="Your Name"
+                      className="w-full bg-gray-50 border border-black/5 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      required
+                    />
+                  </div>
+                )}
+                <div>
+                  <label className="text-[10px] uppercase font-bold tracking-widest text-gray-400 mb-2 block">Email</label>
+                  <input 
+                    type="email" 
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="email@example.com"
+                    className="w-full bg-gray-50 border border-black/5 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] uppercase font-bold tracking-widest text-gray-400 mb-2 block">Password</label>
+                  <input 
+                    type="password" 
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full bg-gray-50 border border-black/5 rounded-2xl px-6 py-4 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    required
+                  />
+                </div>
+
+                {authError && (
+                  <p className="text-xs text-red-500 bg-red-50 p-3 rounded-xl">{authError}</p>
+                )}
+
+                <button 
+                  type="submit"
+                  className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-medium hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-500/20"
+                >
+                  {isSignUp ? 'Sign Up' : 'Login'}
+                </button>
+              </form>
+
+              <div className="mt-6">
+                <div className="relative flex items-center justify-center mb-6">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-gray-100"></div>
+                  </div>
+                  <span className="relative px-4 bg-white text-xs text-gray-400 uppercase tracking-widest">Or continue with</span>
+                </div>
+
+                <button 
+                  onClick={login}
+                  className="w-full py-4 bg-white border border-black/5 text-gray-700 rounded-2xl font-medium hover:bg-gray-50 transition-colors flex items-center justify-center gap-3"
+                >
+                  <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5" alt="Google" />
+                  Google
+                </button>
+              </div>
+
+              <p className="mt-8 text-center text-sm text-gray-500">
+                {isSignUp ? 'Already have an account?' : "Don't have an account?"}{' '}
+                <button 
+                  onClick={() => setIsSignUp(!isSignUp)}
+                  className="text-indigo-600 font-medium hover:underline"
+                >
+                  {isSignUp ? 'Login' : 'Sign Up'}
+                </button>
+              </p>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
       <AnimatePresence>
         {showAddTrip && (
           <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4">
